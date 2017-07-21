@@ -6,6 +6,8 @@ Created on Fri Jul 21 09:36:16 2017
 @author: mittelberger2
 """
 
+#extratags = [(50838, 'I', 2, IJMD.bytecounts, True), (50839, 'B', len(IJMD.metadata), struct.unpack('>'+'B'*len(IJMD.metadata), IJMD.metadata))]
+
 import struct
 import numpy as np
 
