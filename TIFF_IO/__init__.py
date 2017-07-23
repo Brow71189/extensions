@@ -21,6 +21,7 @@ with warnings.catch_warnings():
 import numpy
 import datetime
 import json
+from . import write_ij_metadata
 
 # local libraries
 # None
@@ -36,8 +37,8 @@ class TIFFIODelegate(object):
 
     def __init__(self, api):
         self.__api = api
-        self.io_handler_id = "tiff-io-handler"
-        self.io_handler_name = _("TIFF Files")
+        self.io_handler_id = "roi-tiff-io-handler"
+        self.io_handler_name = _("Imagej ROI TIFF")
         self.io_handler_extensions = ["tif", "tiff"]
 
     def read_data_and_metadata(self, extension, file_path):
@@ -352,14 +353,31 @@ class TIFFIODelegate(object):
                 tifffile_metadata['unit'] = unit
 
             data = data.reshape(tuple(tifffile_shape))
-
+            
+            # Create ROI metadata for imagej if tractor_beam beam position is in metadata
+            extratags = ()
+            tb_metadata = metadata_dict.get('tractor_beam')
+            if tb_metadata is not None:
+                probe_position = tb_metadata.get('probe_position')
+                if probe_position is not None:
+                    probe_x = probe_position['x']
+                    probe_y = probe_position['y']
+                    probe_x *= tifffile_shape[4]
+                    probe_y *= tifffile_shape[3]
+                    IJMD = write_ij_metadata.IJMetadata()
+                    IJMD.add_overlay({'points': [(probe_y, probe_x)]})
+                    extratags = IJMD.tifffile_extratags
+                    
+            tifffile_metadata['version'] = '1.51j'
             # Change dtype if necessary to make tif compatible with imagej
             if not data.dtype in [numpy.float32, numpy.uint8, numpy.uint16]:
                 data = data.astype(numpy.float32)
             try:
-                tifffile.imsave(file_path, data, resolution=resolution, imagej=True, metadata=tifffile_metadata, software='Nion Swift')
+                tifffile.imsave(file_path, data, resolution=resolution, imagej=True, metadata=tifffile_metadata,
+                                software='Nion Swift', byteorder='>', extratags=extratags)
             except Exception as detail:
-                tifffile.imsave(file_path, data, resolution=resolution, metadata=tifffile_metadata)
+                tifffile.imsave(file_path, data, resolution=resolution, metadata=tifffile_metadata, byteorder='>',
+                                extratags=extratags)
                 logging.warn('Could not save metadata in tiff. Reason: ' + str(detail))
 
     def extract_data_element_dict_from_data_and_metadata(self, data_and_metadata):
@@ -382,6 +400,8 @@ class TIFFIODelegate(object):
         metadata_dict['datum_dimension_count'] = data_and_metadata.datum_dimension_count
         metadata_dict['properties'] = dict(data_and_metadata.metadata.get('hardware_source', {}))
         metadata_dict['timestamp'] = data_and_metadata.timestamp.timestamp()
+        if data_and_metadata.metadata.get('tractor_beam') is not None:
+            metadata_dict['tractor_beam'] = dict(data_and_metadata.metadata.get('tractor_beam'))
         return metadata_dict
 
     def create_data_info_objects_from_data_element_dict(self, metadata_dict):

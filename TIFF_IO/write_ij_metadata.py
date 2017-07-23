@@ -126,6 +126,12 @@ class IJMetadata(object):
         if len(self._ranges) > 0:
             ntypes += 1
         return ntypes
+    
+    @property
+    def tifffile_extratags(self):
+        metadata = self.metadata
+        return [(50838, 'I', 2, self.bytecounts, True), (50839, 'B', len(metadata),
+                 struct.unpack('>'+'B'*len(metadata), metadata))]
 
     def _add_data(self, offset, data):
         assert offset != COORDINATES
@@ -151,7 +157,6 @@ class IJMetadata(object):
 
         self.roi_bytes = bytearray(b'\x00'*(HEADER_SIZE + HEADER2_SIZE + npoints*4 + float_size + roi_name_size +
                                             roi_props_size + counters_size))
-        print(len(self.roi_bytes))
 
         self.roi_bytes[:4] = b'Iout'
         self._add_data(VERSION_OFFSET, VERSION)
@@ -210,7 +215,13 @@ class IJMetadata(object):
         self._add_roi_or_overlay('roi ', roi_properties, roi_type=roi_type)
 
     def add_overlay(self, overlay_properties: dict, overlay_type='point'):
-        pass
+        """
+        overlay_properties (dict):
+            points: list of (y, x) tuples in pixels, MUST be a list even if only one pair of coordinates
+            position: position of overlay in a stack (only required for stacks), optional
+            subpixel_resolution: True/False, optional
+        """
+        self._add_roi_or_overlay('over', overlay_properties, roi_type=overlay_type)
 
     def add_labels(self, label_properties: dict):
         raise NotImplementedError
