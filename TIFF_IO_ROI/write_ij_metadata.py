@@ -23,6 +23,14 @@ LEFT = 10
 BOTTOM = 12
 RIGHT = 14
 N_COORDINATES = 16
+X1 = 18
+Y1 = 22
+X2 = 26
+Y2 = 30
+XD = 18
+YD = 22
+WIDTHD = 26
+HEIGHTD = 30
 STROKE_WIDTH = 34
 STROKE_COLOR = 40
 OPTIONS = 50
@@ -52,6 +60,14 @@ dtypes = {
           LEFT: '>h',
           BOTTOM: '>h',
           RIGHT: '>h',
+          X1: '>f',
+          Y1: '>f',
+          X2: '>f',
+          Y2: '>f',
+          XD: '>f',
+          YD: '>f',
+          WIDTHD: '>f',
+          HEIGHTD: '>f',
           N_COORDINATES: '>h',
           STROKE_WIDTH: '>h',
           STROKE_COLOR: '>3s',
@@ -61,8 +77,8 @@ dtypes = {
           }
 
 class default_dict(dict):
-    def __init__(self, mapping, **elements):
-        super().__init__(mapping, **elements)
+    def __init__(self, *mapping, **elements):
+        super().__init__(*mapping, **elements)
         self._default_value = None
 
     def set_default_value(self, default_value):
@@ -126,7 +142,7 @@ class IJMetadata(object):
         if len(self._ranges) > 0:
             ntypes += 1
         return ntypes
-    
+
     @property
     def tifffile_extratags(self):
         metadata = self.metadata
@@ -148,12 +164,24 @@ class IJMetadata(object):
         """
         md_type must be a 4 character imagej type string ('roi ' or 'over')
         """
+        assert roi_type in roi_types, 'Unknown roi type'
         assert type(properties.get('points')) == list
         npoints = len(properties.get('points'))
-        float_size = 8
+        float_size = 0
         roi_name_size = 0
         roi_props_size = 0
         counters_size = 0
+
+        if roi_type in ['point', 'rect', 'line', 'oval']:
+            properties['subpixel_resolution'] = True
+        if roi_type in ['rect', 'oval']:
+            assert npoints == 4
+            npoints = 0
+        if roi_type == 'line':
+            assert npoints == 2
+            npoints = 0
+
+        float_size = npoints*8
 
         self.roi_bytes = bytearray(b'\x00'*(HEADER_SIZE + HEADER2_SIZE + npoints*4 + float_size + roi_name_size +
                                             roi_props_size + counters_size))
@@ -180,20 +208,34 @@ class IJMetadata(object):
             self._add_data(STROKE_COLOR, bytes([255, 255, 255]))
         self._add_data(OPTIONS, SUB_PIXEL_RESOLUTION)
         self._add_data(HEADER2_OFFSET, HEADER_SIZE + 4*npoints + float_size)
-        if properties.get('subpixel_resulution') or roi_type=='point':
-            coordinates_format = dtypes[COORDINATES][1]
-            base1 = COORDINATES + 4*npoints
-            base2 = base1 + 4*npoints
-            for i in range(npoints):
-                self.roi_bytes[base1+4*i:base1+4*i+4] = struct.pack(coordinates_format, points[i, 1])
-                self.roi_bytes[base2+4*i:base2+4*i+4] = struct.pack(coordinates_format, points[i, 0])
-        else:
-            coordinates_format = dtypes[COORDINATES][0]
-            base1 = COORDINATES + 2*npoints
-            base2 = base1 + 2*npoints
-            for i in range(npoints):
-                self.roi_bytes[base1+2*i:base1+2*i+2] = struct.pack(coordinates_format, int(points[i, 1]))
-                self.roi_bytes[base2+2*i:base2+2*i+2] = struct.pack(coordinates_format, int(points[i, 0]))
+
+        if roi_type in ['rect', 'oval']:
+            self._add_data(XD, left)
+            self._add_data(YD, top)
+            self._add_data(HEIGHTD, bottom-top)
+            self._add_data(WIDTHD, right-left)
+
+        if roi_type == 'line':
+            self._add_data(X1, points[0, 1])
+            self._add_data(Y1, points[0, 0])
+            self._add_data(X2, points[1, 1])
+            self._add_data(Y2, points[1, 0])
+
+        if npoints > 0:
+            if properties.get('subpixel_resolution'):
+                coordinates_format = dtypes[COORDINATES][1]
+                base1 = COORDINATES + 4*npoints
+                base2 = base1 + 4*npoints
+                for i in range(npoints):
+                    self.roi_bytes[base1+4*i:base1+4*i+4] = struct.pack(coordinates_format, points[i, 1])
+                    self.roi_bytes[base2+4*i:base2+4*i+4] = struct.pack(coordinates_format, points[i, 0])
+            else:
+                coordinates_format = dtypes[COORDINATES][0]
+                base1 = COORDINATES + 2*npoints
+                base2 = base1 + 2*npoints
+                for i in range(npoints):
+                    self.roi_bytes[base1+2*i:base1+2*i+2] = struct.pack(coordinates_format, int(points[i, 1]))
+                    self.roi_bytes[base2+2*i:base2+2*i+2] = struct.pack(coordinates_format, int(points[i, 0]))
 
         properties['bytestring'] = bytes(self.roi_bytes)
         if md_type == 'roi ':
@@ -208,7 +250,9 @@ class IJMetadata(object):
     def add_roi(self, roi_properties: dict, roi_type='point'):
         """
         roi_properties (dict):
-            points: list of (y, x) tuples in pixels, MUST be a list even if only one pair of coordinates
+            points: list of (y, x) tuples in pixels, MUST be a list even if only one pair of coordinates.
+                    For a rectangle it must be the four corners of the rectangle, for a line the two endpoints and
+                    for an oval the corners of the bounding rectangle.
             position: position of roi in a stack (only required for stacks), optional
             subpixel_resolution: True/False, optional
         """
@@ -217,7 +261,9 @@ class IJMetadata(object):
     def add_overlay(self, overlay_properties: dict, overlay_type='point'):
         """
         overlay_properties (dict):
-            points: list of (y, x) tuples in pixels, MUST be a list even if only one pair of coordinates
+            points: list of (y, x) tuples in pixels, MUST be a list even if only one pair of coordinates.
+                    For a rectangle it must be the four corners of the rectangle, for a line the two endpoints and
+                    for an oval the corners of the bounding rectangle.
             position: position of overlay in a stack (only required for stacks), optional
             subpixel_resolution: True/False, optional
         """
