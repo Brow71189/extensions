@@ -330,7 +330,7 @@ class TIFFIODelegate(object):
             # make sure "resolution" is always a 2-tuple
             if resolution is not None and len(resolution) < 2:
                 resolution += (1, )
-            
+
             # patch "resolution" such that it does not lead to an OverflowError when saving with tifffile.py. The
             # resolution in tif is saved as ratio of two unsigned 32 bit integers. Tifffile.py creates the integer
             # ratio with a maximum denominator of 1e6, which means that for resolutions > 2**32-1/1e6 = 4294.967295
@@ -338,7 +338,7 @@ class TIFFIODelegate(object):
             # We also have to make the numbers in "resolution" positive.
             if (numpy.array(resolution) < 0).any():
                 resolution = tuple(numpy.abs(resolution))
-                
+
             if (numpy.array(resolution) > (2**32-1)/1e6).any():
                 patched_resolution = numpy.array(resolution)
                 possible_numbers = (2**32-1)/(1e6-numpy.arange(1e6))
@@ -347,13 +347,13 @@ class TIFFIODelegate(object):
                 if resolution[1] > (2**32-1)/1e6:
                     patched_resolution[1] = possible_numbers[numpy.argmin(numpy.abs(possible_numbers-resolution[1]))]
                 resolution = tuple(patched_resolution)
-            
+
             # add unit to tif tags
             if unit is not None:
                 tifffile_metadata['unit'] = unit
 
             data = data.reshape(tuple(tifffile_shape))
-            
+
             # Create ROI metadata for imagej if tractor_beam beam position is in metadata
             extratags = ()
             tb_metadata = metadata_dict.get('tractor_beam')
@@ -366,8 +366,9 @@ class TIFFIODelegate(object):
                     probe_y *= tifffile_shape[3]
                     IJMD = write_ij_metadata.IJMetadata()
                     IJMD.add_overlay({'points': [(probe_y, probe_x)]})
+                    IJMD.add_extra_metadata({'bytes': bytes(tifffile_metadata[NION_TAG], 'ASCII'), 'type': 'nion'})
                     extratags = IJMD.tifffile_extratags
-                    
+
             tifffile_metadata['version'] = '1.51j'
             # Change dtype if necessary to make tif compatible with imagej
             if not data.dtype in [numpy.float32, numpy.uint8, numpy.uint16]:

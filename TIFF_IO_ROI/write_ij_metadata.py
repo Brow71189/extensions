@@ -101,6 +101,7 @@ class IJMetadata(object):
         self._info = []
         self._luts = []
         self._ranges = []
+        self._extras = []
 
     @property
     def bytecounts(self):
@@ -108,7 +109,7 @@ class IJMetadata(object):
         header_size = self.ntypes * 8 + 4
         bytecounts += (header_size,)
 
-        for md_type in [self._rois, self._overlays, self._labels, self._info, self._luts, self._ranges]:
+        for md_type in [self._rois, self._overlays, self._labels, self._info, self._luts, self._ranges, self._extras]:
             for properties in md_type:
                 bytecounts += (len(properties['bytestring']),)
 
@@ -121,9 +122,15 @@ class IJMetadata(object):
             metadata_bytestring += b'roi ' + struct.pack('>i', len(self._rois))
         if len(self._overlays) > 0:
             metadata_bytestring += b'over' + struct.pack('>i', len(self._overlays))
-        for md_type in [self._rois, self._overlays, self._labels, self._info, self._luts, self._ranges]:
+        if len(self._info) > 0:
+            metadata_bytestring += b'info' + struct.pack('>i', len(self._info))
+        for extra_tag in self._extras:
+            metadata_bytestring += extra_tag['type'] + struct.pack('>i', 1)
+
+        for md_type in [self._rois, self._overlays, self._labels, self._info, self._luts, self._ranges, self._extras]:
             for properties in md_type:
                 metadata_bytestring += properties['bytestring']
+
         return metadata_bytestring
 
     @property
@@ -141,12 +148,13 @@ class IJMetadata(object):
             ntypes += 1
         if len(self._ranges) > 0:
             ntypes += 1
+        ntypes += len(self._extras)
         return ntypes
 
     @property
     def tifffile_extratags(self):
         metadata = self.metadata
-        return [(50838, 'I', 2, self.bytecounts, True), (50839, 'B', len(metadata),
+        return [(50838, 'I', len(self.bytecounts), self.bytecounts, True), (50839, 'B', len(metadata),
                  struct.unpack('>'+'B'*len(metadata), metadata))]
 
     def _add_data(self, offset, data):
@@ -273,10 +281,41 @@ class IJMetadata(object):
         raise NotImplementedError
 
     def add_info(self, info_properties: dict):
-        raise NotImplementedError
+        """
+        info_properties (dict):
+            text: string that contains the text to write to info tag
+            encoding: encoding of the text, optional, defaults to 'ASCII'
+        """
+
+        text = info_properties.get('text')
+        encoding = info_properties.get('encoding', 'ASCII')
+        if text is None:
+            return
+
+        info_properties['bytestring'] = struct.pack('>' + 'H'*len(text), *bytes(text, encoding))
+        self._info.append(info_properties)
 
     def add_luts(self, luts_properties: dict):
         raise NotImplementedError
 
     def add_ranges(self, ranges_properties: dict):
         raise NotImplementedError
+
+    def add_extra_metadata(self, extra_properties: dict):
+        """
+        extra_properties (dict):
+            bytes: bytestring that is to be written to tag
+            type: string of length 4 that is used in Imagej to identify the metadata type.
+                  Cannot be one of the predefined types ('info', 'labl', 'rang', 'luts', 'plot', 'over', 'roi ')
+        """
+        md_type = str(extra_properties.get('type', ''))
+        assert len(md_type) == 4
+        assert md_type not in ('info', 'labl', 'rang', 'luts', 'plot', 'over', 'roi ')
+
+        bytestring = extra_properties.get('bytes')
+        if bytestring is None:
+            return
+
+        extra_properties['bytestring'] = bytes(bytestring)
+        extra_properties['type'] = bytes(md_type, 'ASCII')
+        self._extras.append(extra_properties)
