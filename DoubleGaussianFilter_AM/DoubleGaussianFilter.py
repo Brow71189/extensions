@@ -188,8 +188,9 @@ class DoubleGaussianFilterAMOperationDelegate(object):
         api = self.__api
 
         # only works with 2d, scalar data
-        assert data_and_metadata.is_data_2d
-        assert data_and_metadata.is_data_scalar_type
+        assert (data_and_metadata.is_data_2d or (data_and_metadata.is_data_3d and data_and_metadata.is_sequence)),\
+               "Only works for 2D images and stacks of 2D images (sequences)"
+        assert data_and_metadata.is_data_scalar_type, "Only works for scalar data"
 
         # make a copy of the data so that other threads can use data while we're processing
         # otherwise numpy puts a lock on the data.
@@ -198,7 +199,7 @@ class DoubleGaussianFilterAMOperationDelegate(object):
         intensity_calibration = data_and_metadata.intensity_calibration
         dimensional_calibrations = data_and_metadata.dimensional_calibrations
         metadata = data_and_metadata.metadata
-
+        data_descriptor = api.create_data_descriptor(data_and_metadata.is_sequence, 0, 2)
         # grab our parameters. ideally this could just access the member variables directly,
         # but it doesn't work that way (yet).
         sigma1 = parameters.get("sigma1")**2
@@ -207,36 +208,47 @@ class DoubleGaussianFilterAMOperationDelegate(object):
         show_gpp = parameters.get("show_gpp")
 
         # first calculate the FFT
-        fft_data = scipy.fftpack.fftshift(scipy.fftpack.fft2(data_copy))
+        fft_data = scipy.fftpack.fftshift(scipy.fftpack.fft2(data_copy), axes=(-2, -1))
 
         # next, set up xx, yy arrays to be linear indexes for x and y coordinates ranging
         # from -width/2 to width/2 and -height/2 to height/2.
-        yy_min = int(math.floor(-data.shape[0] / 2))
-        yy_max = int(math.floor(data.shape[0] / 2))
-        xx_min = int(math.floor(-data.shape[1] / 2))
-        xx_max = int(math.floor(data.shape[1] / 2))
-        yy, xx = numpy.meshgrid(numpy.linspace(yy_min, yy_max, data.shape[0]),
-                                numpy.linspace(xx_min, xx_max, data.shape[1]),
+        yy_min = int(math.floor(-data.shape[-2] / 2))
+        yy_max = int(math.floor(data.shape[-2] / 2))
+        xx_min = int(math.floor(-data.shape[-1] / 2))
+        xx_max = int(math.floor(data.shape[-1] / 2))
+        yy, xx = numpy.meshgrid(numpy.linspace(yy_min, yy_max, data.shape[-2]),
+                                numpy.linspace(xx_min, xx_max, data.shape[-1]),
                                 indexing='ij')
 
         # calculate the pixel distance from the center
-        rr = numpy.sqrt(numpy.square(xx/(data.shape[1] * 0.5)) + numpy.square(yy/(data.shape[0] * 0.5)))
+        rr = numpy.sqrt(numpy.square(xx/(data.shape[-1] * 0.5)) + numpy.square(yy/(data.shape[-2] * 0.5)))
 
         # finally, apply a filter to the Fourier space data.
         filter = numpy.exp(-0.5 * numpy.square(rr / sigma1)) - (1.0 - weight2) * numpy.exp(
             -0.5 * numpy.square(rr / sigma2))
 
-        central_value = fft_data[int(data.shape[0]/2), int(data.shape[1]/2)]
+        if data_and_metadata.is_data_3d:
+            filter = numpy.expand_dims(filter, 0)
+            filter = numpy.repeat(filter, data.shape[0], axis=0)
+
+        if data_and_metadata.is_data_3d:
+            central_value = fft_data[:, int(data.shape[-2]/2), int(data.shape[-1]/2)]
+        else:
+            central_value = fft_data[int(data.shape[-2]/2), int(data.shape[-1]/2)]
+
         filtered_fft_data = fft_data * filter
         # Normalize result
-        filtered_fft_data[int(data.shape[0]/2), int(data.shape[1]/2)] = central_value
+        if data_and_metadata.is_data_3d:
+            filtered_fft_data[:, int(data.shape[-2]/2), int(data.shape[-1]/2)] = central_value
+        else:
+            filtered_fft_data[int(data.shape[-2]/2), int(data.shape[-1]/2)] = central_value
 
-        fft_calibration = self.__api.create_calibration(scale=1/(dimensional_calibrations[0].scale*data.shape[0]),
+        fft_calibration = self.__api.create_calibration(scale=1/(dimensional_calibrations[0].scale*data.shape[-2]),
                                                         units=dimensional_calibrations[1].units + '\u207b\u00b9' if
                                                         dimensional_calibrations[1].units else '')
 
         # and then do invert FFT and take the real value.
-        result = scipy.fftpack.ifft2(scipy.fftpack.ifftshift(filtered_fft_data)).real
+        result = scipy.fftpack.ifft2(scipy.fftpack.ifftshift(filtered_fft_data, axes=(-2,-1))).real
         #result = scipy.signal.fftconvolve(data_copy, filter/numpy.sum(filter), mode='same')
 
         # All following code is just updating the informational data items (line profile of filter and filtered fft)
@@ -273,9 +285,18 @@ class DoubleGaussianFilterAMOperationDelegate(object):
             except Exception as detail:
                 print('Could not add big ellipse region. Reason: ' + str(detail))
 
-            self.fft_data_item.set_data((numpy.log(numpy.abs(fft_data))*filter).astype(numpy.float32))
+            if data_and_metadata.is_data_3d:
+                fft_dimensional_calibrations = [dimensional_calibrations[0], fft_calibration, fft_calibration]
+            else:
+                fft_dimensional_calibrations = [fft_calibration, fft_calibration]
+            fft_xdata = api.create_data_and_metadata((numpy.log(numpy.abs(fft_data))*filter).astype(numpy.float32),
+                                                      dimensional_calibrations=fft_dimensional_calibrations,
+                                                      data_descriptor=data_descriptor)
+            self.fft_data_item.set_data_and_metadata(fft_xdata)
 
         if self.line_profile_data_item is not None:
+            if data_and_metadata.is_data_3d:
+                filter = filter[0]
             try:
                 self.line_profile_data_item.set_data((filter[int(filter.shape[0]/2),
                                             int(filter.shape[1]/2):int(filter.shape[1]/2*(1+2*sigma1))]).astype(numpy.float32))
@@ -321,12 +342,15 @@ class DoubleGaussianFilterAMOperationDelegate(object):
                 self.interval_region = None
 
         if self.fft_data_item is not None:
-            self.fft_data_item.set_dimensional_calibrations([fft_calibration, fft_calibration])
+            if data_and_metadata.is_data_3d:
+                self.fft_data_item.set_dimensional_calibrations([dimensional_calibrations[0], fft_calibration, fft_calibration])
+            else:
+                self.fft_data_item.set_dimensional_calibrations([fft_calibration, fft_calibration])
         if self.line_profile_data_item is not None:
             self.line_profile_data_item.set_dimensional_calibrations([fft_calibration])
 
-        return api.create_data_and_metadata_from_data(result.astype(data.dtype), intensity_calibration,
-                                                      dimensional_calibrations, metadata)
+        return api.create_data_and_metadata(result.astype(data.dtype), intensity_calibration, dimensional_calibrations,
+                                            metadata, data_descriptor=data_descriptor)
         #return api.create_data_and_metadata_from_data(filtered_fft_data, intensity_calibration, dimensional_calibrations, metadata)
 
     def update_metadata(self, data_item, key, value):
